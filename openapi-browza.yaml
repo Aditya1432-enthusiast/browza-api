@@ -1,0 +1,117 @@
+openapi: 3.0.3
+info:
+  title: Browza API (Stubs)
+  version: 0.1.0
+  description: Minimal endpoints for the Browza MVP with policy enforcement.
+servers:
+  - url: http://localhost:8080
+paths:
+  /auth/signup-otp:
+    post:
+      summary: Request signup OTP
+      responses: { '200': { description: OK } }
+  /auth/verify-otp:
+    post:
+      summary: Verify OTP and issue token
+      responses: { '200': { description: OK } }
+  /buyer/profile:
+    post:
+      summary: Create/Update buyer org profile
+      responses: { '200': { description: OK } }
+  /buyer/credits/razorpay/init:
+    post:
+      summary: Init Razorpay order
+      responses: { '200': { description: OK } }
+  /buyer/credits/razorpay/callback:
+    post:
+      summary: Razorpay webhook/callback
+      responses: { '200': { description: OK } }
+  /jobs:
+    post:
+      summary: Create job (GET/HEAD only, allow-listed domains)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                url: { type: string }
+                method: { type: string, enum: [GET, HEAD] }
+              required: [url]
+      responses:
+        '200': { description: Created/queued }
+        '400': { description: Policy error }
+  /jobs/{id}:
+    get:
+      summary: Get job status
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      responses: { '200': { description: OK } }
+  /jobs/{id}/summary:
+    get:
+      summary: Get job summary/metrics
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      responses: { '200': { description: OK } }
+  /seller/register:
+    post:
+      summary: Register seller device
+      responses: { '200': { description: OK } }
+  /seller/heartbeat:
+    post:
+      summary: Seller heartbeat
+      responses: { '200': { description: OK } }
+  /seller/usage:
+    post:
+      summary: Report usage
+      responses: { '200': { description: OK } }
+  /seller/payouts/request:
+    post:
+      summary: Create payout request
+      responses: { '200': { description: OK } }
+  /admin/allowlist/add:
+    post:
+      summary: Add allow-listed host
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                host: { type: string }
+              required: [host]
+      responses: { '200': { description: OK } }
+  /admin/devices:
+    get:
+      summary: List devices
+      responses: { '200': { description: OK } }
+  /admin/payouts:
+    get:
+      summary: List payout requests
+      responses: { '200': { description: OK } }
+  /admin/payouts/{id}/approve:
+    post:
+      summary: Approve payout
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      responses: { '200': { description: OK } }
+  /admin/payouts/{id}/reject:
+    post:
+      summary: Reject payout
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      responses: { '200': { description: OK } }
