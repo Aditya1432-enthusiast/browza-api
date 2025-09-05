@@ -18,7 +18,7 @@ app.use(cors());
 app.use(express.json({ limit: "256kb" }));
 app.use(morgan("tiny"));
 
-const openapiDoc = YAML.load("./openapi-browza.yaml");  // load file from project root
+//const openapiDoc = YAML.load("./openapi-browza.yaml");  // load file from project root
 app.use("/docs", swaggerUi.serve, swaggerUi.setup(openapiDoc)); // then mount /docs
 app.get("/", (_req, res) => res.redirect("/docs"));
 
