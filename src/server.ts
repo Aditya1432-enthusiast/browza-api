@@ -5,6 +5,13 @@ import morgan from "morgan";
 import swaggerUi from "swagger-ui-express";
 import YAML from "yamljs";
 
+import { PrismaClient } from "@prisma/client";
+const prisma = new PrismaClient();
+
+import path from "path";
+const openapiPath = path.join(process.cwd(), "openapi-browza.yaml");
+const openapiDoc = YAML.load(openapiPath);
+
 
 const app = express();       // create the app first
 app.use(cors());
@@ -15,15 +22,12 @@ const openapiDoc = YAML.load("./openapi-browza.yaml");  // load file from projec
 app.use("/docs", swaggerUi.serve, swaggerUi.setup(openapiDoc)); // then mount /docs
 app.get("/", (_req, res) => res.redirect("/docs"));
 
-// --- Config (replace with DB-backed store) ---
-const ALLOWLIST = new Set<string>([
-  "www.google.com",
-  "www.google.co.in",
-  "www.youtube.com",
-  "www.flipkart.com",
-  "www.amazon.in",
-  // add more domains by category
-]);
+
+async function isHostAllowed(host: string) {
+  const found = await prisma.allowlistHost.findUnique({ where: { host } });
+  return !!found;
+}
+
 const DENY_PATH_REGEX = /(\/login|\/signin|\/account|\/profile|\/cart|\/checkout|\/wp-admin)/i;
 
 // --- Middleware: sanitize & policy enforce ---
@@ -34,28 +38,36 @@ app.use((req, _res, next) => {
   next();
 });
 
-// Allow-list + method policy for job submissions (buyer → broker)
-function enforceJobPolicy(req: express.Request, res: express.Response, next: express.NextFunction) {
+async function enforceJobPolicy(req: express.Request, res: express.Response, next: express.NextFunction) {
   const { url } = req.body as { url?: string };
   if (!url) return res.status(400).json({ error: "url_required" });
 
   try {
     const u = new URL(url);
-    if (!ALLOWLIST.has(u.hostname)) {
+
+    // 1) Domain allow-list (DB)
+    if (!(await isHostAllowed(u.hostname))) {
       return res.status(400).json({ error: "domain_not_allowed", host: u.hostname });
     }
-    if (DENY_PATH_REGEX.test(u.pathname)) {
+
+    // 2) Deny login/checkout/admin paths
+    if (/(\/login|\/signin|\/account|\/profile|\/cart|\/checkout|\/wp-admin)/i.test(u.pathname)) {
       return res.status(400).json({ error: "path_blocked" });
     }
+
+    // 3) Only GET or HEAD allowed
     const method = (req.body.method || "GET").toUpperCase();
     if (!["GET", "HEAD"].includes(method)) {
       return res.status(400).json({ error: "method_not_allowed" });
     }
-    if ((req as any).headers) {
-      delete (req as any).headers["cookie"];
-      delete (req as any).headers["authorization"];
-      delete (req as any).headers["set-cookie"];
+
+    // 4) Drop any auth/cookie headers from payload (defense in depth)
+    if (req.body.headers) {
+      delete req.body.headers["cookie"];
+      delete req.body.headers["authorization"];
+      delete req.body.headers["set-cookie"];
     }
+
     (req as any).normalizedJob = { url: u.toString(), method };
     next();
   } catch {
@@ -73,31 +85,114 @@ app.post("/buyer/credits/razorpay/init", (_req, res) => res.json({ orderId: "rzp
 app.post("/buyer/credits/razorpay/callback", (_req, res) => res.json({ ok: true }));
 
 // --- Buyer: jobs ---
-app.post("/jobs", enforceJobPolicy, (req, res) => {
-  const job = (req as any).normalizedJob;
-  return res.json({ jobId: "job_123", ...job });
+app.post("/jobs", enforceJobPolicy, async (req, res) => {
+  const job = (req as any).normalizedJob as { url: string; method: string };
+  const created = await prisma.job.create({
+    data: { url: job.url, method: job.method, status: "queued" },
+    select: { id: true, url: true, method: true, status: true },
+  });
+  return res.json({ jobId: created.id, url: created.url, method: created.method, status: created.status });
 });
-app.get("/jobs/:id", (req, res) => res.json({ jobId: req.params.id, status: "running", httpCode: 200, bytesDown: 12345, latencyMs: 850 }));
-app.get("/jobs/:id/summary", (_req, res) => res.json({ successPct: 96.4, p50: 1200, p95: 4200, gbUsed: 0.07 }));
+
+app.get("/jobs/:id", async (req, res) => {
+  const j = await prisma.job.findUnique({ where: { id: req.params.id } });
+  if (!j) return res.status(404).json({ error: "not_found" });
+  return res.json({
+    jobId: j.id,
+    status: j.status,
+    httpCode: j.httpCode ?? 200,
+    bytesDown: j.bytesDown ?? 12345,
+    latencyMs: j.latencyMs ?? 850,
+  });
+});
+
+app.get("/jobs/:id/summary", async (req, res) => {
+  const j = await prisma.job.findUnique({ where: { id: req.params.id } });
+  if (!j) return res.status(404).json({ error: "not_found" });
+  return res.json({
+    successPct: j.successPct ?? 96.4,
+    p50: j.p50 ?? 1200,
+    p95: j.p95 ?? 4200,
+    gbUsed: j.gbUsed ?? 0.07,
+  });
+});
+
 
 // --- Seller: device registration & runtime ---
-app.post("/seller/register", (_req, res) => res.json({ deviceId: "dev_abc", token: "device.jwt" }));
-app.post("/seller/heartbeat", (_req, res) => res.json({ ok: true, eligible: true }));
-app.post("/seller/usage", (_req, res) => res.json({ ok: true }));
+app.post("/seller/register", async (req, res) => {
+  const dev = await prisma.device.create({
+    data: { city: "Pune", isp: "Jio", uptimePct: 99.1, qualityScore: 87, lastSeen: new Date() },
+  });
+  return res.json({ deviceId: dev.id, token: "device.jwt" });
+});
+
+app.post("/seller/heartbeat", async (req, res) => {
+  // For demo, update the first device if exists
+  const any = await prisma.device.findFirst();
+  if (any) {
+    await prisma.device.update({ where: { id: any.id }, data: { lastSeen: new Date() } });
+  }
+  return res.json({ ok: true, eligible: true });
+});
+
+app.post("/seller/usage", async (req, res) => {
+  const any = await prisma.device.findFirst();
+  if (any) {
+    await prisma.device.update({
+      where: { id: any.id },
+      data: { bytesToday: (any.bytesToday ?? 0) + 1024 * 1024 }, // +1MB
+    });
+  }
+  return res.json({ ok: true });
+});
+
+
 app.post("/seller/payouts/request", (_req, res) => res.json({ payoutRequestId: "po_001", status: "pending" }));
 
 // --- Admin: allow-list, devices, payouts ---
-app.post("/admin/allowlist/add", (req, res) => {
+app.post("/admin/allowlist/add", async (req, res) => {
   const { host } = req.body as { host?: string };
   if (!host) return res.status(400).json({ error: "host_required" });
-  ALLOWLIST.add(host);
-  return res.json({ ok: true, added: host });
+
+  const added = await prisma.allowlistHost.upsert({
+    where: { host },
+    create: { host },
+    update: {}, // already exists → no change
+  });
+  return res.json({ ok: true, added: added.host });
 });
+
+
 app.post("/admin/denylist/set", (_req, res) => res.json({ ok: true }));
-app.get("/admin/devices", (_req, res) => res.json([{ deviceId: "dev_abc", city: "Pune", isp: "Jio", uptimePct: 99.1, qualityScore: 87 }]));
-app.get("/admin/payouts", (_req, res) => res.json([{ id: "po_001", user: "u_123", amount: 250, vpa: "user@upi", kyc: "verified", status: "pending" }]));
-app.post("/admin/payouts/:id/approve", (req, res) => res.json({ id: req.params.id, status: "paid", ref: "txn_ref_123" }));
-app.post("/admin/payouts/:id/reject", (req, res) => res.json({ id: req.params.id, status: "rejected" }));
+
+app.get("/admin/devices", async (req, res) => {
+  const list = await prisma.device.findMany({
+    orderBy: { updatedAt: "desc" },
+    select: { id: true, city: true, isp: true, uptimePct: true, qualityScore: true },
+  });
+  return res.json(list);
+});
+
+app.get("/admin/payouts", async (req, res) => {
+  const list = await prisma.payoutRequest.findMany({ orderBy: { createdAt: "desc" } });
+  return res.json(list);
+});
+
+app.post("/seller/payouts/request", async (req, res) => {
+  const pr = await prisma.payoutRequest.create({ data: { user: "u_123", amount: 250, vpa: "user@upi", kyc: "verified" } });
+  return res.json({ payoutRequestId: pr.id, status: pr.status });
+});
+
+app.post("/admin/payouts/:id/approve", async (req, res) => {
+  const pr = await prisma.payoutRequest.update({ where: { id: req.params.id }, data: { status: "paid" } });
+  return res.json({ id: pr.id, status: pr.status, ref: "txn_ref_123" });
+});
+
+app.post("/admin/payouts/:id/reject", async (req, res) => {
+  const pr = await prisma.payoutRequest.update({ where: { id: req.params.id }, data: { status: "rejected" } });
+  return res.json({ id: pr.id, status: pr.status });
+});
+
 
 // --- Start ---
 const PORT = process.env.PORT || 8080;

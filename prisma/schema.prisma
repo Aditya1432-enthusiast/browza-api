@@ -1,0 +1,54 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model AllowlistHost {
+  id        String   @id @default(cuid())
+  host      String   @unique
+  createdAt DateTime @default(now())
+}
+
+model Job {
+  id        String   @id @default(cuid())
+  url       String
+  method    String   // "GET" | "HEAD"
+  status    String   @default("queued") // queued | running | done | failed
+  httpCode  Int?
+  bytesDown Int?
+  latencyMs Int?
+  // summary fields (for /summary)
+  successPct Float?
+  p50        Int?
+  p95        Int?
+  gbUsed     Float?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model Device {
+  id          String   @id @default(cuid())
+  city        String?
+  isp         String?
+  uptimePct   Float?   // e.g., 99.1
+  qualityScore Int?    // 0–100
+  lastSeen    DateTime?
+  bytesToday  Int?     // we'll bump this in /seller/usage
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
+
+model PayoutRequest {
+  id        String   @id @default(cuid())
+  user      String?
+  amount    Int?     // ₹ (paise) if you want integers; for demo keep as whole rupees
+  vpa       String?
+  kyc       String?
+  status    String   @default("pending") // pending | paid | rejected
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
